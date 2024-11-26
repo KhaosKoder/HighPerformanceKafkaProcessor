@@ -1,12 +1,13 @@
-﻿using Confluent.Kafka;
-using Microsoft.Extensions.Options;
+﻿using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using HighPerformanceKafkaProcessor.Configuration;
+using Confluent.Kafka;
+using Newtonsoft.Json;
 
 namespace HighPerformanceKafkaProcessor.Producers
 {
 
-    public class DeadLetterProducer :  IDisposable
+    public class DeadLetterProducer : IDisposable
     {
         private readonly IProducer<string, string> _producer;
         private readonly ILogger<DeadLetterProducer> _logger;
@@ -17,39 +18,57 @@ namespace HighPerformanceKafkaProcessor.Producers
             ILogger<DeadLetterProducer> logger)
         {
             _logger = logger;
-            _deadLetterTopic = options.Value.DeadLetterTopic;
+            var dlqConfig = options.Value.DeadLetterQueue;
+            _deadLetterTopic = dlqConfig.Topic;
 
             var config = new ProducerConfig
             {
-                BootstrapServers = string.Join(",", options.Value.BootstrapServers)
+                BootstrapServers = string.Join(",", dlqConfig.BootstrapServers)
             };
 
-            if (options.Value.UseSsl)
+            if (dlqConfig.UseSsl)
             {
                 config.SecurityProtocol = SecurityProtocol.Ssl;
-                config.SslCertificateLocation = options.Value.SslCertificateLocation;
-                config.SslCaLocation = options.Value.SslCaLocation;
+                config.SslCertificateLocation = dlqConfig.SslCertificateLocation;
+                config.SslCaLocation = dlqConfig.SslCaLocation;
             }
 
             _producer = new ProducerBuilder<string, string>(config).Build();
         }
 
-        public async Task PublishAsync<TKey, TValue>(TKey key, TValue value)
+        public async Task PublishAsync(string topicGroup, string originalTopic, string key, string value, string error)
         {
             try
             {
+                var deadLetterMessage = new DeadLetterMessage
+                {
+                    OriginalTopic = originalTopic,
+                    TopicGroup = topicGroup,
+                    Key = key,
+                    Value = value,
+                    ErrorMessage = error,
+                    Timestamp = DateTime.UtcNow
+                };
+
+                var serializedMessage = JsonConvert.SerializeObject(deadLetterMessage);
+
                 var message = new Message<string, string>
                 {
-                    Key = key?.ToString(),
-                    Value = value?.ToString()
+                    Key = key,
+                    Value = serializedMessage
                 };
 
                 await _producer.ProduceAsync(_deadLetterTopic, message);
-                _logger.LogInformation("Message published to dead letter topic {Topic}", _deadLetterTopic);
+
+                _logger.LogInformation(
+                    "Message published to dead letter topic {Topic}. Original topic: {OriginalTopic}, Group: {TopicGroup}",
+                    _deadLetterTopic, originalTopic, topicGroup);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to publish to dead letter topic {Topic}", _deadLetterTopic);
+                _logger.LogError(ex,
+                    "Failed to publish to dead letter topic {Topic}. Original topic: {OriginalTopic}, Group: {TopicGroup}",
+                    _deadLetterTopic, originalTopic, topicGroup);
                 throw;
             }
         }

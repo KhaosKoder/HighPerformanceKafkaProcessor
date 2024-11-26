@@ -1,7 +1,6 @@
-﻿using HighPerformanceKafkaProcessor.Producers;
-using KafkaFlow;
+﻿using KafkaFlow;
 using Microsoft.Extensions.Logging;
-
+using HighPerformanceKafkaProcessor.Producers;
 
 namespace HighPerformanceKafkaProcessor.Middleware
 {
@@ -9,13 +8,16 @@ namespace HighPerformanceKafkaProcessor.Middleware
     {
         private readonly ILogger<ErrorHandlingMiddleware> _logger;
         private readonly DeadLetterProducer _deadLetterProducer;
+        private readonly string _topicGroup;
 
         public ErrorHandlingMiddleware(
             ILogger<ErrorHandlingMiddleware> logger,
-            DeadLetterProducer deadLetterProducer)
+            DeadLetterProducer deadLetterProducer,
+            string topicGroup)
         {
             _logger = logger;
             _deadLetterProducer = deadLetterProducer;
+            _topicGroup = topicGroup;
         }
 
         public async Task Invoke(IMessageContext context, MiddlewareDelegate next)
@@ -26,12 +28,17 @@ namespace HighPerformanceKafkaProcessor.Middleware
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing message from topic {Topic}. Publishing to dead letter topic.",
-                    context.ConsumerContext.Topic);
+                _logger.LogError(ex,
+                    "Error processing message from topic {Topic} in group {TopicGroup}",
+                    context.ConsumerContext.Topic,
+                    _topicGroup);
 
                 await _deadLetterProducer.PublishAsync(
-                    context.Message.Key,
-                    context.Message.Value
+                    _topicGroup,
+                    context.ConsumerContext.Topic,
+                    context.Message.Key?.ToString(),
+                    context.Message.Value?.ToString(),
+                    ex.Message
                 );
             }
         }
